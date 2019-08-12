@@ -374,11 +374,9 @@ def post_profile():
 
                 avatar_name = digest + ext
 
-            prefix = ''
-            if user_id % 2 == 0:
-                prefix = '02/'
-            else:
-                prefix = '03/'
+            prefix = os.environ.get('ISUBATA_APP_INS', '')
+            if prefix:
+                prefix += '/'
 
             path = prefix + avatar_name
             fname = '%s/%s' % (str(icons_folder), path)
