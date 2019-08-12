@@ -14,6 +14,7 @@ import gzip
 import shutil
 from functools import partial
 from sqlalchemy import create_engine
+import jinja2
 import newrelic.agent
 
 
@@ -26,6 +27,9 @@ icons_folder = static_folder / 'icons'
 app = flask.Flask(__name__)
 app.secret_key = 'tonymoris'
 avatar_max_size = 1 * 1024 * 1024
+
+app.jinja_options = app.jinja_options.copy()
+app.jinja_options['bytecode_cache'] = jinja2.FileSystemBytecodeCache()
 
 if not os.path.exists(str(icons_folder)):
     os.makedirs(str(icons_folder))
@@ -134,14 +138,13 @@ def get_index():
 
 def get_channel_list_info(focus_channel_id=None):
     cur = dbh().cursor()
-    cur.execute("SELECT * FROM channel ORDER BY id")
+    cur.execute("SELECT id, name FROM channel ORDER BY id")
     channels = cur.fetchall()
-    description = ""
 
-    for c in channels:
-        if c['id'] == focus_channel_id:
-            description = c['description']
-            break
+    description = ''
+    if focus_channel_id:
+        cur.execute('SELECT description FROM channel WHERE id = %s', (focus_channel_id,))
+        description = cur.fetchone()['description']
 
     return channels, description
 
@@ -297,7 +300,7 @@ def get_profile(user_name):
     channels, _ = get_channel_list_info()
 
     cur = dbh().cursor()
-    cur.execute("SELECT * FROM user WHERE name = %s", (user_name,))
+    cur.execute("SELECT id, name, display_name, avatar_icon FROM user WHERE name = %s", (user_name,))
     user = cur.fetchone()
 
     if not user:
