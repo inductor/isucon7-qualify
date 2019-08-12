@@ -241,7 +241,7 @@ def fetch_unread():
     if not user_id:
         flask.abort(403)
 
-    time.sleep(0.1)
+    time.sleep(2.2)
 
     cur = dbh().cursor()
     cur.execute('SELECT id, message_count as cnt FROM channel')
