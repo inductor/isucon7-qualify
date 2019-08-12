@@ -9,19 +9,19 @@ import random
 import string
 import tempfile
 import time
-import logging
+#import logging
 import gzip
 import shutil
 from functools import partial
 from sqlalchemy import create_engine
 import jinja2
-import newrelic.agent
+#import newrelic.agent
 from redis import Redis
 from flask_session import Session
 
 
-logging.basicConfig(filename='/tmp/isubata.log')
-newrelic.agent.initialize('/home/isucon/isubata/webapp/python/newrelic.ini')
+#logging.basicConfig(filename='/tmp/isubata.log')
+#newrelic.agent.initialize('/home/isucon/isubata/webapp/python/newrelic.ini')
 
 static_folder = pathlib.Path(__file__).resolve().parent.parent / 'public'
 icons_folder = static_folder / 'icons'
