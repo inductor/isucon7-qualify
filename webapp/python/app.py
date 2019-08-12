@@ -75,19 +75,21 @@ def get_initialize():
     cur.execute("DELETE FROM image WHERE id > 1001")
     cur.execute("DELETE FROM channel WHERE id > 10")
     cur.execute("DELETE FROM message WHERE id > 10000")
-    cur.execute("DELETE FROM haveread")
+    cur.execute("DELETE FROM readcount")
+    cur.execute('UPDATE channel C SET C.message_count = (SELECT COUNT(M.id) FROM message M WHERE M.channel_id = C.id)')
     cur.close()
     return ('', 204)
 
 
 def db_get_user(cur, user_id):
-    cur.execute("SELECT * FROM user WHERE id = %s", (user_id,))
+    cur.execute("SELECT id, name, display_name FROM user WHERE id = %s", (user_id,))
     return cur.fetchone()
 
 
 def db_add_message(cur, channel_id, user_id, content):
     cur.execute("INSERT INTO message (channel_id, user_id, content, created_at) VALUES (%s, %s, %s, NOW())",
                 (channel_id, user_id, content))
+    cur.execute('UPDATE channel SET message_count = message_count + 1 WHERE id = %s', (channel_id,))
 
 
 def login_required(func):
@@ -177,7 +179,7 @@ def get_login():
 def post_login():
     name = flask.request.form['name']
     cur = dbh().cursor()
-    cur.execute("SELECT * FROM user WHERE name = %s", (name,))
+    cur.execute("SELECT id, password, salt FROM user WHERE name = %s", (name,))
     row = cur.fetchone()
     if not row or row['password'] != hashlib.sha1(
             (row['salt'] + flask.request.form['password']).encode('utf-8')).hexdigest():
@@ -221,11 +223,11 @@ def get_message():
                      'content': row['content']} for row in cur.fetchall())
     response.reverse()
 
-    max_message_id = max(r['id'] for r in response) if response else 0
-    cur.execute('INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at)'
-                ' VALUES (%s, %s, %s, NOW(), NOW())'
-                ' ON DUPLICATE KEY UPDATE message_id = %s, updated_at = NOW()',
-                (user_id, channel_id, max_message_id, max_message_id))
+    cur.execute('SELECT message_count as cnt FROM channel WHERE id = %s', (channel_id,))
+    cnt = int(cur.fetchone()['cnt'])
+    cur.execute('INSERT INTO readcount (user_id, channel_id, num)'
+                ' VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE num = %s',
+                (user_id, channel_id, cnt, cnt))
 
     return flask.jsonify(response)
 
@@ -236,26 +238,19 @@ def fetch_unread():
     if not user_id:
         flask.abort(403)
 
-#    time.sleep(1.0)
+    time.sleep(0.1)
 
     cur = dbh().cursor()
-    cur.execute('SELECT id FROM channel')
+    cur.execute('SELECT id, message_count as cnt FROM channel')
     udict = {}
     for r in cur.fetchall():
-      udict[r['id']] = 0
+        udict[r['id']] = int(r['cnt'])
 
-    cur.execute('SELECT channel_id, COUNT(id) as cnt FROM message GROUP BY channel_id')
-    for r in cur.fetchall():
-      udict[r['channel_id']] = int(r['cnt'])
-
-    cur.execute('SELECT C.id as channel_id, ('
-                '  SELECT COUNT(id) as cnt FROM message WHERE channel_id = C.id AND R.message_id < id'
-                ') AS cnt FROM channel C, haveread R'
-                ' WHERE C.id = R.channel_id AND R.user_id = %s', (user_id,))
+    cur.execute('SELECT channel_id, num as cnt FROM readcount WHERE user_id = %s', (user_id,))
     ucounts = cur.fetchall()
     for r in ucounts:
       if r['channel_id'] in udict:
-        udict[r['channel_id']] = int(r['cnt'])
+        udict[r['channel_id']] -= int(r['cnt'])
 
     return flask.jsonify(list({'channel_id': cid, 'unread': unread} for cid, unread in udict.items()))
 
@@ -272,7 +267,7 @@ def get_history(channel_id):
 
     N = 20
     cur = dbh().cursor()
-    cur.execute("SELECT COUNT(*) as cnt FROM message WHERE channel_id = %s", (channel_id,))
+    cur.execute("SELECT COUNT(id) as cnt FROM message WHERE channel_id = %s", (channel_id,))
     cnt = int(cur.fetchone()['cnt'])
     max_page = math.ceil(cnt / N)
     if not max_page:
@@ -281,18 +276,13 @@ def get_history(channel_id):
     if not 1 <= page <= max_page:
         flask.abort(400)
 
-    cur.execute("SELECT * FROM message WHERE channel_id = %s ORDER BY id DESC LIMIT %s OFFSET %s",
-                (channel_id, N, (page - 1) * N))
-    rows = cur.fetchall()
-    messages = []
-    for row in rows:
-        r = {}
-        r['id'] = row['id']
-        cur.execute("SELECT name, display_name, avatar_icon FROM user WHERE id = %s", (row['user_id'],))
-        r['user'] = cur.fetchone()
-        r['date'] = row['created_at'].strftime("%Y/%m/%d %H:%M:%S")
-        r['content'] = row['content']
-        messages.append(r)
+    cur.execute('SELECT M.id, M.created_at, M.content, U.name, U.display_name, U.avatar_icon'
+                ' FROM message M JOIN user U ON M.user_id = U.id'
+                ' WHERE M.channel_id = %s ORDER BY M.id DESC LIMIT %s OFFSET %s',
+                (channel_id, N, (page -1) * N))
+    messages = list({'id': row['id'], 'user': {'name': row['name'], 'display_name': row['display_name'], 'avatar_icon': row['avatar_icon']},
+                     'date': row['created_at'].strftime("%Y/%m/%d %H:%M:%S"),
+                     'content': row['content']} for row in cur.fetchall())
     messages.reverse()
 
     channels, description = get_channel_list_info(channel_id)
