@@ -9,11 +9,21 @@ import random
 import string
 import tempfile
 import time
+import logging
+import gzip
+import shutil
+from functools import partial
+from sqlalchemy import create_engine
+import newrelic.agent
 
+
+logging.basicConfig(filename='/tmp/isubata.log')
+newrelic.agent.initialize('/home/isucon/isubata/webapp/python/newrelic.ini')
 
 static_folder = pathlib.Path(__file__).resolve().parent.parent / 'public'
 icons_folder = static_folder / 'icons'
-app = flask.Flask(__name__, static_folder=str(static_folder), static_url_path='')
+
+app = flask.Flask(__name__)
 app.secret_key = 'tonymoris'
 avatar_max_size = 1 * 1024 * 1024
 
@@ -28,20 +38,25 @@ config = {
 }
 
 
+SCHEME = 'mysql://{user}:{passwd}@{host}/{db}'.format(
+    user=os.environ.get('ISUBATA_DB_USER', 'root'),
+    passwd=os.environ.get('ISUBATA_DB_PASSWORD', ''),
+    host=os.environ.get('ISUBATA_DB_HOST', 'localhost'),
+    db='isubata'
+)
+DBCONF = {'charset': 'utf8mb4', 'autocommit': True}
+
+dbengine = create_engine(SCHEME, connect_args=DBCONF)
+
+
 def dbh():
     if hasattr(flask.g, 'db'):
         return flask.g.db
 
-    flask.g.db = MySQLdb.connect(
-        host   = config['db_host'],
-        port   = config['db_port'],
-        user   = config['db_user'],
-        passwd = config['db_password'],
-        db     = 'isubata',
-        charset= 'utf8mb4',
-        cursorclass= MySQLdb.cursors.DictCursor,
-        autocommit = True,
-    )
+    conn = dbengine.raw_connection()
+    conn.cursor = partial(conn.cursor, MySQLdb.cursors.DictCursor)
+    flask.g.db = conn
+
     cur = flask.g.db.cursor()
     cur.execute("SET SESSION sql_mode='TRADITIONAL,NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY'")
     return flask.g.db
@@ -198,21 +213,15 @@ def get_message():
     channel_id = int(flask.request.args.get('channel_id'))
     last_message_id = int(flask.request.args.get('last_message_id'))
     cur = dbh().cursor()
-    cur.execute("SELECT * FROM message WHERE id > %s AND channel_id = %s ORDER BY id DESC LIMIT 100",
+    cur.execute('SELECT M.id, M.created_at, M.content, U.name, U.display_name, U.avatar_icon FROM message M, user U'
+                    ' WHERE M.id > %s AND M.channel_id = %s AND U.id = M.user_id ORDER BY M.id DESC LIMIT 100',
                 (last_message_id, channel_id))
-    rows = cur.fetchall()
-    response = []
-    for row in rows:
-        r = {}
-        r['id'] = row['id']
-        cur.execute("SELECT name, display_name, avatar_icon FROM user WHERE id = %s", (row['user_id'],))
-        r['user'] = cur.fetchone()
-        r['date'] = row['created_at'].strftime("%Y/%m/%d %H:%M:%S")
-        r['content'] = row['content']
-        response.append(r)
+    response = list({'id': row['id'], 'user': {'name': row['name'], 'display_name': row['display_name'], 'avatar_icon': row['avatar_icon']},
+                     'date': row['created_at'].strftime("%Y/%m/%d %H:%M:%S"),
+                     'content': row['content']} for row in cur.fetchall())
     response.reverse()
 
-    max_message_id = max(r['id'] for r in rows) if rows else 0
+    max_message_id = max(r['id'] for r in response) if response else 0
     cur.execute('INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at)'
                 ' VALUES (%s, %s, %s, NOW(), NOW())'
                 ' ON DUPLICATE KEY UPDATE message_id = %s, updated_at = NOW()',
@@ -227,27 +236,28 @@ def fetch_unread():
     if not user_id:
         flask.abort(403)
 
-    time.sleep(1.0)
+#    time.sleep(1.0)
 
     cur = dbh().cursor()
     cur.execute('SELECT id FROM channel')
-    rows = cur.fetchall()
-    channel_ids = [row['id'] for row in rows]
+    udict = {}
+    for r in cur.fetchall():
+      udict[r['id']] = 0
 
-    res = []
-    for channel_id in channel_ids:
-        cur.execute('SELECT * FROM haveread WHERE user_id = %s AND channel_id = %s', (user_id, channel_id))
-        row = cur.fetchone()
-        if row:
-            cur.execute('SELECT COUNT(*) as cnt FROM message WHERE channel_id = %s AND %s < id',
-                        (channel_id, row['message_id']))
-        else:
-            cur.execute('SELECT COUNT(*) as cnt FROM message WHERE channel_id = %s', (channel_id,))
-        r = {}
-        r['channel_id'] = channel_id
-        r['unread'] = int(cur.fetchone()['cnt'])
-        res.append(r)
-    return flask.jsonify(res)
+    cur.execute('SELECT channel_id, COUNT(id) as cnt FROM message GROUP BY channel_id')
+    for r in cur.fetchall():
+      udict[r['channel_id']] = int(r['cnt'])
+
+    cur.execute('SELECT C.id as channel_id, ('
+                '  SELECT COUNT(id) as cnt FROM message WHERE channel_id = C.id AND R.message_id < id'
+                ') AS cnt FROM channel C, haveread R'
+                ' WHERE C.id = R.channel_id AND R.user_id = %s', (user_id,))
+    ucounts = cur.fetchall()
+    for r in ucounts:
+      if r['channel_id'] in udict:
+        udict[r['channel_id']] = int(r['cnt'])
+
+    return flask.jsonify(list({'channel_id': cid, 'unread': unread} for cid, unread in udict.items()))
 
 
 @app.route('/history/<int:channel_id>')
@@ -342,7 +352,6 @@ def post_profile():
 
     display_name = flask.request.form.get('display_name')
     avatar_name = None
-    avatar_data = None
 
     if 'avatar_icon' in flask.request.files:
         file = flask.request.files['avatar_icon']
@@ -359,42 +368,27 @@ def post_profile():
                     flask.abort(400)
 
                 f.seek(0)
+                file.seek(0)
                 data = f.read()
                 digest = hashlib.sha1(data).hexdigest()
 
                 avatar_name = digest + ext
-                avatar_data = data
 
-    if avatar_name and avatar_data:
-        cur.execute("INSERT INTO image (name, data) VALUES (%s, _binary %s)", (avatar_name, avatar_data))
+            fname = '%s/%s' % (str(icons_folder), avatar_name)
+            file.save(fname)
+
+            file.seek(0)
+            with gzip.open('%s.gz' % fname, 'wb') as gz:
+                shutil.copyfileobj(file, gz)
+
+    if avatar_name and display_name:
+        cur.execute("UPDATE user SET display_name = %s, avatar_icon = %s WHERE id = %s", (display_name, avatar_name, user_id))
+    elif avatar_name:
         cur.execute("UPDATE user SET avatar_icon = %s WHERE id = %s", (avatar_name, user_id))
-
-    if display_name:
+    elif display_name:
         cur.execute("UPDATE user SET display_name = %s WHERE id = %s", (display_name, user_id))
 
     return flask.redirect('/', 303)
-
-
-def ext2mime(ext):
-    if ext in ('.jpg', '.jpeg'):
-        return 'image/jpeg'
-    if ext == '.png':
-        return 'image/png'
-    if ext == '.gif':
-        return 'image/gif'
-    return ''
-
-
-@app.route('/icons/<file_name>')
-def get_icon(file_name):
-    cur = dbh().cursor()
-    cur.execute("SELECT * FROM image WHERE name = %s", (file_name,))
-    row = cur.fetchone()
-    ext = os.path.splitext(file_name)[1] if '.' in file_name else ''
-    mime = ext2mime(ext)
-    if row and mime:
-        return flask.Response(row['data'], mimetype=mime)
-    flask.abort(404)
 
 
 if __name__ == "__main__":
