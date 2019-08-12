@@ -219,7 +219,7 @@ def get_message():
     last_message_id = int(flask.request.args.get('last_message_id'))
     cur = dbh().cursor()
     cur.execute('SELECT M.id, M.created_at, M.content, U.name, U.display_name, U.avatar_icon FROM message M, user U'
-                    ' WHERE M.id > %s AND M.channel_id = %s AND U.id = M.user_id ORDER BY M.id DESC LIMIT 100',
+                ' WHERE M.id > %s AND M.channel_id = %s AND U.id = M.user_id ORDER BY M.id DESC LIMIT 100',
                 (last_message_id, channel_id))
     response = list({'id': row['id'], 'user': {'name': row['name'], 'display_name': row['display_name'], 'avatar_icon': row['avatar_icon']},
                      'date': row['created_at'].strftime("%Y/%m/%d %H:%M:%S"),
