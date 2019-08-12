@@ -2,3 +2,5 @@ Jinja2
 flask
 mysqlclient
 gunicorn
+newrelic
+sqlalchemy
