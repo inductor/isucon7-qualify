@@ -120,9 +120,9 @@ def register(cur, user, password):
     pass_digest = hashlib.sha1((salt + password).encode('utf-8')).hexdigest()
     try:
         cur.execute(
-            "INSERT INTO user (name, salt, password, display_name, avatar_icon, created_at)"
-            " VALUES (%s, %s, %s, %s, %s, NOW())",
-            (user, salt, pass_digest, user, "default.png"))
+            "INSERT INTO user (name, salt, password, display_name, avatar_icon, icon, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, NOW())",
+            (user, salt, pass_digest, user, "default.png", 'default.png'))
         cur.execute("SELECT LAST_INSERT_ID() AS last_insert_id")
         return cur.fetchone()['last_insert_id']
     except MySQLdb.IntegrityError:
@@ -218,10 +218,10 @@ def get_message():
     channel_id = int(flask.request.args.get('channel_id'))
     last_message_id = int(flask.request.args.get('last_message_id'))
     cur = dbh().cursor()
-    cur.execute('SELECT M.id, M.created_at, M.content, U.name, U.display_name, U.avatar_icon FROM message M, user U'
+    cur.execute('SELECT M.id, M.created_at, M.content, U.name, U.display_name, U.icon FROM message M, user U'
                 ' WHERE M.id > %s AND M.channel_id = %s AND U.id = M.user_id ORDER BY M.id DESC LIMIT 100',
                 (last_message_id, channel_id))
-    response = list({'id': row['id'], 'user': {'name': row['name'], 'display_name': row['display_name'], 'avatar_icon': row['avatar_icon']},
+    response = list({'id': row['id'], 'user': {'name': row['name'], 'display_name': row['display_name'], 'avatar_icon': row['icon']},
                      'date': row['created_at'].strftime("%Y/%m/%d %H:%M:%S"),
                      'content': row['content']} for row in cur.fetchall())
     response.reverse()
@@ -279,11 +279,11 @@ def get_history(channel_id):
     if not 1 <= page <= max_page:
         flask.abort(400)
 
-    cur.execute('SELECT M.id, M.created_at, M.content, U.name, U.display_name, U.avatar_icon'
+    cur.execute('SELECT M.id, M.created_at, M.content, U.name, U.display_name, U.icon'
                 ' FROM message M JOIN user U ON M.user_id = U.id'
                 ' WHERE M.channel_id = %s ORDER BY M.id DESC LIMIT %s OFFSET %s',
                 (channel_id, N, (page -1) * N))
-    messages = list({'id': row['id'], 'user': {'name': row['name'], 'display_name': row['display_name'], 'avatar_icon': row['avatar_icon']},
+    messages = list({'id': row['id'], 'user': {'name': row['name'], 'display_name': row['display_name'], 'avatar_icon': row['icon']},
                      'date': row['created_at'].strftime("%Y/%m/%d %H:%M:%S"),
                      'content': row['content']} for row in cur.fetchall())
     messages.reverse()
@@ -300,7 +300,7 @@ def get_profile(user_name):
     channels, _ = get_channel_list_info()
 
     cur = dbh().cursor()
-    cur.execute("SELECT id, name, display_name, avatar_icon FROM user WHERE name = %s", (user_name,))
+    cur.execute("SELECT id, name, display_name, icon AS avatar_icon FROM user WHERE name = %s", (user_name,))
     user = cur.fetchone()
 
     if not user:
@@ -367,7 +367,14 @@ def post_profile():
 
                 avatar_name = digest + ext
 
-            fname = '%s/%s' % (str(icons_folder), avatar_name)
+            prefix = ''
+            if user_id % 2 == 0:
+                prefix = '02/'
+            else:
+                prefix = '03/'
+
+            path = prefix + avatar_name
+            fname = '%s/%s' % (str(icons_folder), path)
             file.save(fname)
 
             file.seek(0)
@@ -375,9 +382,9 @@ def post_profile():
                 shutil.copyfileobj(file, gz)
 
     if avatar_name and display_name:
-        cur.execute("UPDATE user SET display_name = %s, avatar_icon = %s WHERE id = %s", (display_name, avatar_name, user_id))
+        cur.execute("UPDATE user SET display_name = %s, avatar_icon = %s, icon = %s WHERE id = %s", (display_name, avatar_name, path, user_id))
     elif avatar_name:
-        cur.execute("UPDATE user SET avatar_icon = %s WHERE id = %s", (avatar_name, user_id))
+        cur.execute("UPDATE user SET avatar_icon = %s, icon = %s WHERE id = %s", (avatar_name, path, user_id))
     elif display_name:
         cur.execute("UPDATE user SET display_name = %s WHERE id = %s", (display_name, user_id))
 
