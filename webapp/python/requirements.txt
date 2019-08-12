@@ -4,3 +4,6 @@ mysqlclient
 gunicorn
 newrelic
 sqlalchemy
+redis
+Flask-Session
+ipython

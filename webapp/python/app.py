@@ -16,6 +16,8 @@ from functools import partial
 from sqlalchemy import create_engine
 import jinja2
 import newrelic.agent
+from redis import Redis
+from flask_session import Session
 
 
 logging.basicConfig(filename='/tmp/isubata.log')
@@ -27,6 +29,11 @@ icons_folder = static_folder / 'icons'
 app = flask.Flask(__name__)
 app.secret_key = 'tonymoris'
 avatar_max_size = 1 * 1024 * 1024
+
+SESSION_TYPE = 'redis'
+SESSION_REDIS = Redis(os.environ.get('ISUBATA_DB_HOST', 'localhost'))
+app.config.from_object(__name__)
+Session(app)
 
 app.jinja_options = app.jinja_options.copy()
 app.jinja_options['bytecode_cache'] = jinja2.FileSystemBytecodeCache()
